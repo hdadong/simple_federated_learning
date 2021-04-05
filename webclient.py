@@ -15,7 +15,7 @@ import random
 use_cuda = torch.cuda.is_available()   
 device = torch.device("cuda" if use_cuda else "cpu")
 print(device)
-device ="cpu"
+#device ="cpu"
 class MLP(nn.Module):
     """A simple implementation of Deep Neural Network model"""
     def __init__(self, num_feature, output_size):
@@ -62,7 +62,7 @@ class FLServer(nn.Module):
         #self.global_model =  torch.jit.load("1.pt")
     def aggregated(self, models):
         """FedAvg"""
-        models_par = [client_model.state_dict() for client_model in models]
+        models_par = [client_model.model.state_dict() for client_model in models]
         new_par = copy.deepcopy(models_par[0])
 
         for name in new_par:
@@ -71,6 +71,7 @@ class FLServer(nn.Module):
         for idx, par in enumerate(models_par):
             print("len(models_par)0",len(models_par))
             w = 1/len(models_par)
+
             for name in new_par:
                 #print(name)
                 # new_par[name] += par[name] * (self.weight[idxs_users[idx]] / np.sum(self.weight[idxs_users]))
@@ -84,7 +85,12 @@ class FLServer(nn.Module):
             name ="model."+k # remove `module.`，表面从第7个key值字符取到最后一个字符，正好去掉了module.
             new_state_dict[name] = v #新字典的key值对应的value为一一对应的值。 
         '''
-        self.global_model.load_state_dict(new_par)
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        for k, v in new_par.items():
+            name ="model."+k # remove `module.`，表面从第7个key值字符取到最后一个字符，正好去掉了module.
+            new_state_dict[name] = v #新字典的key值对应的value为一一对应的值。 
+        self.global_model.load_state_dict(new_state_dict)
         return self.global_model.state_dict().copy()
 
 
@@ -120,9 +126,10 @@ class FLServer(nn.Module):
                 f2.write(model_updated)
 
             model = torch.jit.load("./model_update_recv.pt")
-
-            params = list(model.named_parameters())
+            
             '''
+            params = list(model.named_parameters())
+            
             for i in params:
                 print(i)
             '''
@@ -250,7 +257,7 @@ async def hello(aggregated_round):
         for i in params:
             print(i)
         '''
-        broadcast_send = torch.jit.trace(broadcast_send, torch.zeros([1, 1, 300], dtype=torch.float),check_trace=False)
+        broadcast_send = torch.jit.trace(broadcast_send, torch.zeros([1, 1, 300], dtype=torch.float).to(device),check_trace=False)
         torch.jit.save(broadcast_send,"broadcast_send.pt")#model to file
         with open("broadcast_send.pt", "rb") as f: #file to binary
             fl_entity.trace_model = f.read() #binary

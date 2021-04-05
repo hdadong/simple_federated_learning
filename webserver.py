@@ -75,8 +75,7 @@ class FLClient(nn.Module):
         2. Perform local training (compute gradients)
         3. Return local model (gradients) to server
     """
-    def __init__(self, model, output_size, data_path, lr, E, batch_size,  epsilon,delta, device=None):
-    #def __init__(self, model, output_size, data, lr, E, batch_size, clip, sigma, device=None):
+    def __init__(self, model, output_size, data_path, test_data_path,lr, E, batch_size,  epsilon,delta, device=None):
         """
         :param model: ML model's training process should be implemented
         :param data: (tuple) dataset, all data in client side is used as training data
@@ -96,19 +95,26 @@ class FLClient(nn.Module):
             batch_size=self.BATCH_SIZE,
             shuffle=True
         )
-        self.noise = None
+        
+        
+        self.test_data_path = test_data_path
+        self.test_data_target = (load_cnn_virus(self.test_data_path))
+        self.test_data = []
+        self.test_target = []
+        for sample in self.test_data_target:
+            self.test_data += [torch.tensor(sample[0]).to(self.device)]  # test set
+            self.test_target += [torch.tensor(sample[1]).to(self.device)]  # target label
+        
         self.lr = lr
         self.E = E
-        #self.sigma = sigma
         self.epsilon = epsilon
         self.delta = delta
 
-        #print("data[0].shape[1]",data[0].shape[1])
         self.model = model(self.data[0].shape[1], output_size).to(self.device)
-
+        self.trace_model = model(self.data[0].shape[1], output_size).to(self.device)
         self.optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.lr)
 
-
+        self.current_broadcast = 0
 
     def update(self):
         """local model update"""
@@ -128,6 +134,8 @@ class FLClient(nn.Module):
 
                 optimizer.step()
                 optimizer.zero_grad()
+        return self.model.state_dict().copy()
+
         '''
         # Add Gaussian noise
         # 1. compute l2-sensitivity by Client Based DP-FedAVG Alg.
@@ -140,7 +148,20 @@ class FLClient(nn.Module):
             #new_param[name] += gaussian_noise_weight(self.model.state_dict()[name].shape, sensitivity,self.epsilon, self.delta, device=self.device)
         self.model.load_state_dict(copy.deepcopy(new_param))
         '''
+    def test_acc_femnist(self):
+        self.model.eval()
+        correct = 0
+        tot_sample = 0
+        for i in range(len(self.test_data)):
+            t_pred_y = self.model(self.test_data[i])
+            _, predicted = torch.max(t_pred_y, 1)
+            print("predicted",predicted)
 
+            print("self.target[i]",self.test_target[i])
+            correct += (predicted == self.test_target[i]).sum().item()
+            tot_sample += self.test_target[i].size(0)
+        acc = correct / tot_sample
+        return acc
 
 async def fit(websocket, path):
     print("here is fit function")
@@ -167,14 +188,17 @@ async def fit(websocket, path):
     #name = int.from_bytes(name, byteorder='little', signed=True)
     broadcast_recv = torch.jit.load("./broadcast_recv.pt")
     broadcast_recv_par = broadcast_recv.model.state_dict()
+    #print("current:{0},broadcast_recv_par:{1}".format(flclient.current_broadcast,broadcast_recv_par))
     
     from collections import OrderedDict
     new_state_dict = OrderedDict()
     for k, v in broadcast_recv_par.items():
         name ="model."+k # remove `module.`，表面从第7个key值字符取到最后一个字符，正好去掉了module.
         new_state_dict[name] = v #新字典的key值对应的value为一一对应的值。 
-
-    flclient.model.load_state_dict(copy.deepcopy(new_state_dict))
+    
+    if flclient.current_broadcast > 0:
+        flclient.model.load_state_dict(copy.deepcopy(new_state_dict))
+    
     '''
     params = list(flclient.model.named_parameters())
     
@@ -183,7 +207,9 @@ async def fit(websocket, path):
     '''
     #model_par = list(broadcast_recv.named_parameters())
     #flclient.model = broadcast_recv
-    flclient.update()
+    send_model = flclient.update()
+    #print("current:{0},update:{1}".format(flclient.current_broadcast,send_model))
+
     '''
     params = list(flclient.model.named_parameters())
     
@@ -191,7 +217,9 @@ async def fit(websocket, path):
         print(i)
     '''
     # send the updated model 
-    updated_model_send = torch.jit.trace(flclient.model, torch.zeros([1, 1, 300], dtype=torch.float),check_trace=False)
+
+
+    updated_model_send = torch.jit.trace(flclient.model, torch.zeros([1, 1, 300], dtype=torch.float).to(flclient.device),check_trace=False)
     torch.jit.save(updated_model_send,"updated_model_send.pt")
     f = open("updated_model_send.pt", "rb") 
     updated_model_send = f.read()
@@ -199,16 +227,19 @@ async def fit(websocket, path):
     f.close
     import os
     os.remove("updated_model_send.pt") 
-
+    acc = flclient.test_acc_femnist()
+    print("current:{0},acc:{1}".format(flclient.current_broadcast,acc))
+    flclient.current_broadcast = flclient.current_broadcast + 1
 flclient = FLClient(model = MLP,
                     output_size = 15,
-                    data_path = "0_3_300.csv",
+                    data_path = "train_300_0.8per.csv",
+                    test_data_path = "test_300_0.2per.csv",
                     lr = 0.0001,
                     E = 1,
                     batch_size = 256,
                     epsilon = 50,
                     delta = 0.00001,
-                    device = "cpu")
+                    device = "cuda")
 print("hahaha")
 start_server = websockets.serve(fit, "0.0.0.0", 28092)
 
